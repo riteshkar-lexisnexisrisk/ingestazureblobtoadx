@@ -1,0 +1,99 @@
+name: Destroy environment
+
+# Manually triggered, destructive pipeline. Deletes every resource in the
+# chosen environment's resource group. Requires typing the exact resource
+# group name as a confirmation, and should additionally be gated by required
+# reviewers on the matching GitHub Environment (destroy-shareddev /
+# destroy-test) - see README for setup.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to destroy'
+        required: true
+        type: choice
+        options:
+          - shareddev
+          - test
+      confirmResourceGroupName:
+        description: 'Type the exact resource group name to confirm (e.g. itp or itp-test)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  AZURE_SUBSCRIPTION_ID: a2a8d07d-bc4a-4483-ad5a-21de20170904
+
+jobs:
+  resolve-environment:
+    name: Resolve and validate target
+    runs-on: ubuntu-latest
+    outputs:
+      resource-group: ${{ steps.resolve.outputs.resource_group }}
+    steps:
+      - name: Resolve resource group for environment
+        id: resolve
+        run: |
+          case "${{ github.event.inputs.environment }}" in
+            shareddev) RG=itp ;;
+            test) RG=itp-test ;;
+            *) echo "::error::Unknown environment '${{ github.event.inputs.environment }}'"; exit 1 ;;
+          esac
+          echo "resource_group=$RG" >> "$GITHUB_OUTPUT"
+
+      - name: Validate confirmation text matches resource group name
+        run: |
+          case "${{ github.event.inputs.environment }}" in
+            shareddev) EXPECTED=itp ;;
+            test) EXPECTED=itp-test ;;
+          esac
+          if [ "${{ github.event.inputs.confirmResourceGroupName }}" != "$EXPECTED" ]; then
+            echo "::error::Confirmation text '${{ github.event.inputs.confirmResourceGroupName }}' does not match expected resource group name '$EXPECTED'. Aborting destroy."
+            exit 1
+          fi
+
+  destroy:
+    name: Destroy ${{ github.event.inputs.environment }}
+    runs-on: self-hosted
+    needs: resolve-environment
+    # Map to a dedicated "destroy-<environment>" GitHub Environment so repo
+    # admins can require separate, stricter approvers for destructive runs
+    # than for normal deploys.
+    environment: destroy-${{ github.event.inputs.environment }}
+    permissions:
+      contents: read
+    steps:
+      - name: Verify Azure CLI session and select subscription
+        shell: pwsh
+        run: |
+          az account show | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            throw "No active 'az login' session found on this runner. Run 'az login' on this workstation once and keep the session active."
+          }
+          az account set --subscription $env:AZURE_SUBSCRIPTION_ID
+
+      - name: Show resources that will be deleted
+        shell: pwsh
+        run: |
+          az resource list --resource-group ${{ needs.resolve-environment.outputs.resource-group }} -o table
+
+      - name: Delete resource group
+        shell: pwsh
+        run: |
+          az group delete `
+            --name ${{ needs.resolve-environment.outputs.resource-group }} `
+            --yes `
+            --no-wait=false
+
+      - name: Confirm deletion
+        shell: pwsh
+        run: |
+          az group show --name ${{ needs.resolve-environment.outputs.resource-group }} 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Error "Resource group still exists after delete."
+            exit 1
+          }
+          Write-Host "Resource group ${{ needs.resolve-environment.outputs.resource-group }} deleted successfully."

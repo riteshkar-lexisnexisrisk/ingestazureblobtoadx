@@ -1,0 +1,197 @@
+name: Promote SharedDev to Test
+
+# Manually triggered pipeline that re-validates SharedDev (security scan, unit
+# tests, end-to-end regression) and only then deploys the same infrastructure
+# definitions to the Test environment, followed by a post-deploy regression
+# pass against Test.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "promote" to confirm you want to promote SharedDev to Test'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  SHAREDDEV_RESOURCE_GROUP: itp
+  SHAREDDEV_PARAMETER_FILE: infra/parameters/shareddev.bicepparam
+  TEST_RESOURCE_GROUP: itp-test
+  TEST_PARAMETER_FILE: infra/parameters/test.bicepparam
+  AZURE_SUBSCRIPTION_ID: a2a8d07d-bc4a-4483-ad5a-21de20170904
+
+jobs:
+  validate-confirmation:
+    name: Validate confirmation input
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check confirmation text
+        run: |
+          if [ "${{ github.event.inputs.confirm }}" != "promote" ]; then
+            echo "::error::You must type 'promote' to run this pipeline. Aborting."
+            exit 1
+          fi
+
+  security-scan:
+    name: Security scan
+    runs-on: ubuntu-latest
+    needs: validate-confirmation
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Microsoft Security DevOps scan
+        uses: microsoft/security-devops-action@v1
+        id: msdo
+
+      - name: Upload SARIF results to code scanning
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: ${{ steps.msdo.outputs.sarifFile }}
+
+  unit-tests:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    needs: validate-confirmation
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Pester
+        shell: pwsh
+        run: Install-Module Pester -Force -SkipPublisherCheck -MinimumVersion 5.5.0 -Scope CurrentUser
+
+      - name: Run unit tests
+        shell: pwsh
+        run: |
+          Import-Module Pester -MinimumVersion 5.5.0
+          $config = New-PesterConfiguration
+          $config.Run.Path = 'tests/unit/Infra.Tests.ps1'
+          $config.Run.Exit = $true
+          $config.Output.Verbosity = 'Detailed'
+          Invoke-Pester -Configuration $config
+
+  verify-shareddev:
+    name: Verify SharedDev is healthy
+    runs-on: self-hosted
+    needs: [security-scan, unit-tests]
+    environment: shareddev
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify Azure CLI session and select subscription
+        shell: pwsh
+        run: |
+          az account show | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            throw "No active 'az login' session found on this runner. Run 'az login' on this workstation once and keep the session active."
+          }
+          az account set --subscription $env:AZURE_SUBSCRIPTION_ID
+
+      - name: Install Pester
+        shell: pwsh
+        run: Install-Module Pester -Force -SkipPublisherCheck -MinimumVersion 5.5.0 -Scope CurrentUser
+
+      - name: Run end-to-end regression tests against SharedDev
+        shell: pwsh
+        run: |
+          Import-Module Pester -MinimumVersion 5.5.0
+          $config = New-PesterConfiguration
+          $config.Run.Container = New-PesterContainer -Path 'tests/e2e/Regression.Tests.ps1' -Data @{
+            ResourceGroup  = '${{ env.SHAREDDEV_RESOURCE_GROUP }}'
+            ParameterFile  = '${{ env.SHAREDDEV_PARAMETER_FILE }}'
+          }
+          $config.Run.Exit = $true
+          $config.Output.Verbosity = 'Detailed'
+          Invoke-Pester -Configuration $config
+
+  deploy-test:
+    name: Deploy to Test
+    runs-on: self-hosted
+    needs: verify-shareddev
+    # The "test" GitHub Environment should be configured with required
+    # reviewers so this step pauses for manual approval even though the
+    # pipeline itself was triggered automatically-in-sequence above.
+    environment: test
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify Azure CLI session and select subscription
+        shell: pwsh
+        run: |
+          az account show | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            throw "No active 'az login' session found on this runner. Run 'az login' on this workstation once and keep the session active."
+          }
+          az account set --subscription $env:AZURE_SUBSCRIPTION_ID
+
+      - name: Ensure Test resource group exists
+        shell: pwsh
+        run: |
+          az group show --name $env:TEST_RESOURCE_GROUP 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            az group create --name $env:TEST_RESOURCE_GROUP --location eastus
+          }
+
+      - name: What-if preview
+        shell: pwsh
+        run: |
+          az deployment group what-if `
+            --resource-group $env:TEST_RESOURCE_GROUP `
+            --template-file infra/main.bicep `
+            --parameters $env:TEST_PARAMETER_FILE
+
+      - name: Deploy to Test
+        shell: pwsh
+        run: |
+          $stamp = Get-Date -Format 'yyyyMMddHHmmss'
+          az deployment group create `
+            --resource-group $env:TEST_RESOURCE_GROUP `
+            --template-file infra/main.bicep `
+            --parameters $env:TEST_PARAMETER_FILE `
+            --name "promote-$stamp"
+
+  post-deploy-regression:
+    name: Post-deploy regression (Test)
+    runs-on: self-hosted
+    needs: deploy-test
+    environment: test
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify Azure CLI session and select subscription
+        shell: pwsh
+        run: |
+          az account show | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            throw "No active 'az login' session found on this runner. Run 'az login' on this workstation once and keep the session active."
+          }
+          az account set --subscription $env:AZURE_SUBSCRIPTION_ID
+
+      - name: Install Pester
+        shell: pwsh
+        run: Install-Module Pester -Force -SkipPublisherCheck -MinimumVersion 5.5.0 -Scope CurrentUser
+
+      - name: Run end-to-end regression tests against Test
+        shell: pwsh
+        run: |
+          Import-Module Pester -MinimumVersion 5.5.0
+          $config = New-PesterConfiguration
+          $config.Run.Container = New-PesterContainer -Path 'tests/e2e/Regression.Tests.ps1' -Data @{
+            ResourceGroup  = '${{ env.TEST_RESOURCE_GROUP }}'
+            ParameterFile  = '${{ env.TEST_PARAMETER_FILE }}'
+          }
+          $config.Run.Exit = $true
+          $config.Output.Verbosity = 'Detailed'
+          Invoke-Pester -Configuration $config

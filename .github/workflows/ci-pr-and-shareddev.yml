@@ -1,0 +1,228 @@
+name: CI - Validate PR and promote to SharedDev
+
+# Runs security scans, unit tests, and end-to-end regression tests on every
+# Pull Request targeting main. When a PR is merged (push to main), the same
+# checks run again as a safety net, and on success the infrastructure is
+# automatically deployed ("promoted") to the SharedDev environment, followed
+# by a post-deploy regression pass.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  AZURE_RESOURCE_GROUP: itp
+  BICEP_PARAMETER_FILE: infra/parameters/shareddev.bicepparam
+  AZURE_SUBSCRIPTION_ID: a2a8d07d-bc4a-4483-ad5a-21de20170904
+
+jobs:
+  security-scan:
+    name: Security scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Microsoft Security DevOps scan
+        uses: microsoft/security-devops-action@v1
+        id: msdo
+
+      - name: Upload SARIF results to code scanning
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: ${{ steps.msdo.outputs.sarifFile }}
+
+  lint-and-build:
+    name: Lint and build Bicep templates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build main.bicep
+        run: az bicep build --file infra/main.bicep --stdout > /dev/null
+
+      - name: Build every module
+        run: |
+          set -e
+          for f in infra/modules/*.bicep; do
+            echo "Building $f"
+            az bicep build --file "$f" --stdout > /dev/null
+          done
+
+      - name: Build every environment parameter file
+        run: |
+          set -e
+          for f in infra/parameters/*.bicepparam; do
+            echo "Building $f"
+            az bicep build-params --file "$f" --stdout > /dev/null
+          done
+
+  unit-tests:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    needs: lint-and-build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Pester
+        shell: pwsh
+        run: Install-Module Pester -Force -SkipPublisherCheck -MinimumVersion 5.5.0 -Scope CurrentUser
+
+      - name: Run unit tests
+        shell: pwsh
+        run: |
+          Import-Module Pester -MinimumVersion 5.5.0
+          $config = New-PesterConfiguration
+          $config.Run.Path = 'tests/unit/Infra.Tests.ps1'
+          $config.Run.Exit = $true
+          $config.Output.Verbosity = 'Detailed'
+          $config.TestResult.Enabled = $true
+          $config.TestResult.OutputPath = 'unit-test-results.xml'
+          Invoke-Pester -Configuration $config
+
+      - name: Publish unit test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unit-test-results
+          path: unit-test-results.xml
+
+  e2e-regression:
+    name: End-to-end regression tests (SharedDev)
+    # Runs on the self-hosted runner installed on the workstation, reusing the
+    # Azure CLI session that is already logged in there (see README for
+    # one-time "az login" setup). No service principal/secrets required.
+    runs-on: self-hosted
+    needs: unit-tests
+    environment: shareddev
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify Azure CLI session and select subscription
+        shell: pwsh
+        run: |
+          az account show | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            throw "No active 'az login' session found on this runner. Run 'az login' on this workstation once and keep the session active."
+          }
+          az account set --subscription $env:AZURE_SUBSCRIPTION_ID
+
+      - name: Install Pester
+        shell: pwsh
+        run: Install-Module Pester -Force -SkipPublisherCheck -MinimumVersion 5.5.0 -Scope CurrentUser
+
+      - name: Run end-to-end regression tests against SharedDev
+        shell: pwsh
+        run: |
+          Import-Module Pester -MinimumVersion 5.5.0
+          $config = New-PesterConfiguration
+          $config.Run.Container = New-PesterContainer -Path 'tests/e2e/Regression.Tests.ps1' -Data @{
+            ResourceGroup  = '${{ env.AZURE_RESOURCE_GROUP }}'
+            ParameterFile  = '${{ env.BICEP_PARAMETER_FILE }}'
+          }
+          $config.Run.Exit = $true
+          $config.Output.Verbosity = 'Detailed'
+          $config.TestResult.Enabled = $true
+          $config.TestResult.OutputPath = 'e2e-test-results.xml'
+          Invoke-Pester -Configuration $config
+
+      - name: Publish e2e test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-test-results-pre-deploy
+          path: e2e-test-results.xml
+
+  deploy-shareddev:
+    name: Deploy to SharedDev
+    runs-on: self-hosted
+    needs: [security-scan, e2e-regression]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment: shareddev
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify Azure CLI session and select subscription
+        shell: pwsh
+        run: |
+          az account show | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            throw "No active 'az login' session found on this runner. Run 'az login' on this workstation once and keep the session active."
+          }
+          az account set --subscription $env:AZURE_SUBSCRIPTION_ID
+
+      - name: What-if preview
+        shell: pwsh
+        run: |
+          az deployment group what-if `
+            --resource-group $env:AZURE_RESOURCE_GROUP `
+            --template-file infra/main.bicep `
+            --parameters $env:BICEP_PARAMETER_FILE
+
+      - name: Deploy to SharedDev
+        shell: pwsh
+        run: |
+          $stamp = Get-Date -Format 'yyyyMMddHHmmss'
+          az deployment group create `
+            --resource-group $env:AZURE_RESOURCE_GROUP `
+            --template-file infra/main.bicep `
+            --parameters $env:BICEP_PARAMETER_FILE `
+            --name "ci-$stamp"
+
+  post-deploy-regression:
+    name: Post-deploy regression (SharedDev)
+    runs-on: self-hosted
+    needs: deploy-shareddev
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment: shareddev
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify Azure CLI session and select subscription
+        shell: pwsh
+        run: |
+          az account show | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            throw "No active 'az login' session found on this runner. Run 'az login' on this workstation once and keep the session active."
+          }
+          az account set --subscription $env:AZURE_SUBSCRIPTION_ID
+
+      - name: Install Pester
+        shell: pwsh
+        run: Install-Module Pester -Force -SkipPublisherCheck -MinimumVersion 5.5.0 -Scope CurrentUser
+
+      - name: Run post-deploy regression tests
+        shell: pwsh
+        run: |
+          Import-Module Pester -MinimumVersion 5.5.0
+          $config = New-PesterConfiguration
+          $config.Run.Container = New-PesterContainer -Path 'tests/e2e/Regression.Tests.ps1' -Data @{
+            ResourceGroup  = '${{ env.AZURE_RESOURCE_GROUP }}'
+            ParameterFile  = '${{ env.BICEP_PARAMETER_FILE }}'
+          }
+          $config.Run.Exit = $true
+          $config.Output.Verbosity = 'Detailed'
+          $config.TestResult.Enabled = $true
+          $config.TestResult.OutputPath = 'post-deploy-e2e-results.xml'
+          Invoke-Pester -Configuration $config
+
+      - name: Publish post-deploy test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-test-results-post-deploy
+          path: post-deploy-e2e-results.xml

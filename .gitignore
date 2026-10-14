@@ -1,0 +1,16 @@
+# Bicep build output
+*.json.bak
+bin/
+.bicep/
+
+# Test results
+*-test-results.xml
+TestResults/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+
+# Local az CLI scratch files
+export.json
+export.bicep

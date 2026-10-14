@@ -1,0 +1,22 @@
+{
+    "files.exclude": {
+        "**/.git": true,
+        "**/.svn": true,
+        "**/.hg": true,
+        "**/.jj": true,
+        "**/.DS_Store": true,
+        "**/Thumbs.db": true,
+        ".mule": true
+    },
+    "chat.editor.preferCopilotHarness": false,
+    "chat.defaultToCopilotHarness": false,
+    "chat.agentSkillsLocations": {
+        ".agents/skills": true,
+        ".github/skills": true,
+        ".claude/skills": true,
+        "~/.agents/skills": true,
+        "~/.copilot/skills": true,
+        "~/.claude/skills": true,
+        "~/.vscode/extensions/synapsevscode.synapse-1.26.0/copilot/skills": true
+    }
+}
