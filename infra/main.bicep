@@ -36,6 +36,13 @@ param kustoSkuCapacity int = 2
 @description('Public IPv4 addresses or CIDR ranges allowed through the storage account firewall, in addition to trusted Azure services (e.g. the self-hosted runner workstation public IP).')
 param allowedIpAddresses array = []
 
+@description('Optional GUIDs of role assignments that were already created manually (e.g. via the portal) before this environment was adopted into Bicep, keyed by a fixed role key. Leave a value empty (the default) to let Bicep compute a fresh, deterministic GUID instead - safe for any new environment/subscription, since nothing pre-exists there to conflict with. Only set these for an environment where the exact role assignment GUIDs are already known (looked up via "az role assignment list") to avoid a RoleAssignmentExists conflict.')
+param existingRoleAssignmentIds object = {
+  adxStorageBlobDataReader: ''
+  adxEventHubDataReceiver: ''
+  eventGridEventHubDataSender: ''
+}
+
 @description('Common tags applied to every resource.')
 param tags object = {
   environment: environmentName
@@ -43,10 +50,22 @@ param tags object = {
   managedBy: 'bicep'
 }
 
-// Built-in role definition IDs (stable across tenants).
-var storageBlobDataReaderRoleId = '2a2b9908-6ea1-4ae2-8e65-a410df84e7d1'
-var eventHubsDataReceiverRoleId = 'a638d3c7-ab3a-418d-83e6-5f17a39d4fde'
-var eventHubsDataSenderRoleId = '2b629674-e913-4c01-ae53-ef4638d8f975'
+// Built-in role definition IDs. These are global constants published by
+// Microsoft (the same GUID for every tenant/subscription), unlike role
+// *assignment* names, which are unique per grant. The pipeline resolves the
+// current value dynamically by role name (via "az role definition list
+// --name") before every deployment, so this template never needs to be
+// hand-edited if Microsoft were to change one. The defaults below are the
+// current, documented values, used as a fallback only for direct/local
+// deployments that bypass the pipeline's resolution step.
+@description('Role definition ID for the built-in "Storage Blob Data Reader" role.')
+param storageBlobDataReaderRoleId string = '2a2b9908-6ea1-4ae2-8e65-a410df84e7d1'
+
+@description('Role definition ID for the built-in "Azure Event Hubs Data Receiver" role.')
+param eventHubsDataReceiverRoleId string = 'a638d3c7-ab3a-418d-83e6-5f17a39d4fde'
+
+@description('Role definition ID for the built-in "Azure Event Hubs Data Sender" role.')
+param eventHubsDataSenderRoleId string = '2b629674-e913-4c01-ae53-ef4638d8f975'
 
 module adxIdentity 'modules/managedIdentity.bicep' = {
   name: 'adxIdentity'
@@ -130,14 +149,17 @@ resource eventHubNamespaceExisting 'Microsoft.EventHub/namespaces@2024-01-01' ex
   ]
 }
 
-// These three role assignments were originally created manually (portal) when
-// the resource group was first set up, so they already exist with specific
-// GUID names. Azure RBAC rejects a second role assignment for the same
-// (principal, role, scope) tuple even under a different resource name, so the
-// `name:` below must match the existing assignment's GUID exactly - using a
-// freshly computed guid() here would fail with "RoleAssignmentExists".
+// These three role assignments may already exist from before the environment
+// was adopted into Bicep (e.g. created manually via the portal). Azure RBAC
+// rejects a second role assignment for the same (principal, role, scope)
+// tuple even under a different resource name, so if a known existing GUID is
+// supplied via existingRoleAssignmentIds, it's reused here; otherwise a fresh
+// deterministic GUID is computed, which is safe for any new
+// environment/subscription since nothing pre-exists there to conflict with.
 resource adxStorageBlobDataReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: 'eb33d15f-eac7-4e9b-bb0d-fe81de2ce39e'
+  name: empty(existingRoleAssignmentIds.adxStorageBlobDataReader)
+    ? guid(resourceGroup().id, storageAccountName, adxManagedIdentityName, storageBlobDataReaderRoleId)
+    : existingRoleAssignmentIds.adxStorageBlobDataReader
   scope: storageAccountExisting
   properties: {
     principalId: adxIdentity.outputs.principalId
@@ -147,7 +169,9 @@ resource adxStorageBlobDataReader 'Microsoft.Authorization/roleAssignments@2022-
 }
 
 resource adxEventHubDataReceiver 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: 'ce6bb43e-8354-4d5d-bc3d-750c36c77cce'
+  name: empty(existingRoleAssignmentIds.adxEventHubDataReceiver)
+    ? guid(resourceGroup().id, eventHubNamespaceName, adxManagedIdentityName, eventHubsDataReceiverRoleId)
+    : existingRoleAssignmentIds.adxEventHubDataReceiver
   scope: eventHubNamespaceExisting
   properties: {
     principalId: adxIdentity.outputs.principalId
@@ -157,7 +181,9 @@ resource adxEventHubDataReceiver 'Microsoft.Authorization/roleAssignments@2022-0
 }
 
 resource eventGridEventHubDataSender 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: '0a2d326f-5f91-47ff-bfd0-0b0574403d61'
+  name: empty(existingRoleAssignmentIds.eventGridEventHubDataSender)
+    ? guid(resourceGroup().id, eventHubNamespaceName, eventGridManagedIdentityName, eventHubsDataSenderRoleId)
+    : existingRoleAssignmentIds.eventGridEventHubDataSender
   scope: eventHubNamespaceExisting
   properties: {
     principalId: eventGridIdentity.outputs.principalId

@@ -169,13 +169,101 @@ jobs:
           }
           az account set --subscription $env:AZURE_SUBSCRIPTION_ID
 
+      - name: Resolve role definition and role assignment GUIDs dynamically
+        # Two kinds of GUID are resolved here, live against this subscription,
+        # so neither one is ever hardcoded in Bicep:
+        #  1. Built-in role DEFINITION IDs (e.g. "Storage Blob Data Reader")
+        #     are global constants published by Microsoft - identical in
+        #     every tenant - but still resolved by name via
+        #     "az role definition list" rather than pinned as a literal GUID,
+        #     so this workflow keeps working unmodified if Microsoft ever
+        #     changes one.
+        #  2. Role ASSIGNMENT names are looked up per (principal, role,
+        #     scope) to detect whether the ADX/Event Grid managed identities
+        #     already have the role assignments this template grants (e.g.
+        #     because the resource group was originally created manually,
+        #     outside Bicep). If found, the exact existing GUID is reused so
+        #     the deployment updates it in place; if not found (a brand-new
+        #     environment/subscription), the value stays empty and
+        #     main.bicep falls back to computing a fresh, conflict-free GUID.
+        # Together, this makes the template portable across
+        # environments/subscriptions with no hand-maintained GUIDs anywhere.
+        shell: powershell
+        run: |
+          $paramContent = Get-Content $env:BICEP_PARAMETER_FILE -Raw
+          function Get-BicepParamValue($Content, $Name) {
+            if ($Content -match "param $Name\s*=\s*'([^']+)'") { return $Matches[1] }
+            throw "Could not find parameter '$Name' in the parameter file"
+          }
+          $storageAccountName = Get-BicepParamValue $paramContent 'storageAccountName'
+          $eventHubNamespaceName = Get-BicepParamValue $paramContent 'eventHubNamespaceName'
+          $adxManagedIdentityName = Get-BicepParamValue $paramContent 'adxManagedIdentityName'
+          $eventGridManagedIdentityName = Get-BicepParamValue $paramContent 'eventGridManagedIdentityName'
+
+          function Get-RoleDefinitionId($roleName) {
+            $id = az role definition list --name $roleName --query "[0].name" -o tsv --only-show-errors 2>$null
+            if ($LASTEXITCODE -ne 0 -or -not $id) {
+              throw "Could not resolve built-in role definition ID for role '$roleName'. Verify the role name is correct and this account can read role definitions."
+            }
+            return $id.Trim()
+          }
+
+          function Get-PrincipalId($name) {
+            $json = az identity show -g $env:AZURE_RESOURCE_GROUP -n $name -o json --only-show-errors 2>$null
+            if ($LASTEXITCODE -ne 0 -or -not $json) { return $null }
+            return ($json | ConvertFrom-Json).principalId
+          }
+
+          function Get-ExistingAssignmentName($principalId, $roleDefinitionId, $scope) {
+            if (-not $principalId) { return '' }
+            $json = az role assignment list --assignee $principalId --role $roleDefinitionId --scope $scope -o json --only-show-errors 2>$null
+            if ($LASTEXITCODE -ne 0 -or -not $json) { return '' }
+            $assignments = $json | ConvertFrom-Json
+            if ($assignments -and $assignments.Count -gt 0) { return $assignments[0].name }
+            return ''
+          }
+
+          $storageBlobDataReaderRoleId = Get-RoleDefinitionId 'Storage Blob Data Reader'
+          $eventHubsDataReceiverRoleId = Get-RoleDefinitionId 'Azure Event Hubs Data Receiver'
+          $eventHubsDataSenderRoleId   = Get-RoleDefinitionId 'Azure Event Hubs Data Sender'
+          Write-Host "Resolved role definition IDs: StorageBlobDataReader=$storageBlobDataReaderRoleId EventHubsDataReceiver=$eventHubsDataReceiverRoleId EventHubsDataSender=$eventHubsDataSenderRoleId"
+          "STORAGE_BLOB_DATA_READER_ROLE_ID=$storageBlobDataReaderRoleId" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "EVENTHUBS_DATA_RECEIVER_ROLE_ID=$eventHubsDataReceiverRoleId" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "EVENTHUBS_DATA_SENDER_ROLE_ID=$eventHubsDataSenderRoleId" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          $storageScope  = "/subscriptions/$($env:AZURE_SUBSCRIPTION_ID)/resourceGroups/$($env:AZURE_RESOURCE_GROUP)/providers/Microsoft.Storage/storageAccounts/$storageAccountName"
+          $eventHubScope = "/subscriptions/$($env:AZURE_SUBSCRIPTION_ID)/resourceGroups/$($env:AZURE_RESOURCE_GROUP)/providers/Microsoft.EventHub/namespaces/$eventHubNamespaceName"
+
+          $adxPrincipalId = Get-PrincipalId $adxManagedIdentityName
+          $egPrincipalId  = Get-PrincipalId $eventGridManagedIdentityName
+
+          $ids = [ordered]@{
+            adxStorageBlobDataReader    = Get-ExistingAssignmentName $adxPrincipalId $storageBlobDataReaderRoleId $storageScope
+            adxEventHubDataReceiver     = Get-ExistingAssignmentName $adxPrincipalId $eventHubsDataReceiverRoleId $eventHubScope
+            eventGridEventHubDataSender = Get-ExistingAssignmentName $egPrincipalId  $eventHubsDataSenderRoleId   $eventHubScope
+          }
+
+          $json = $ids | ConvertTo-Json -Compress
+          Write-Host "Resolved existingRoleAssignmentIds: $json"
+          # Escape embedded double quotes: PowerShell doesn't auto-escape
+          # quotes embedded in a string when the argument crosses into a
+          # native/cmd-shim executable like az.cmd, so passing $json as-is
+          # to later "az ... --parameters existingRoleAssignmentIds=..."
+          # calls would otherwise arrive corrupted (stripped quotes).
+          $escapedJson = $json.Replace('"', '\"')
+          "EXISTING_ROLE_ASSIGNMENT_IDS=$escapedJson" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: What-if preview
         shell: powershell
         run: |
           az deployment group what-if `
             --resource-group $env:AZURE_RESOURCE_GROUP `
             --template-file infra/main.bicep `
-            --parameters $env:BICEP_PARAMETER_FILE
+            --parameters $env:BICEP_PARAMETER_FILE `
+            --parameters existingRoleAssignmentIds="$env:EXISTING_ROLE_ASSIGNMENT_IDS" `
+            --parameters storageBlobDataReaderRoleId=$env:STORAGE_BLOB_DATA_READER_ROLE_ID `
+            --parameters eventHubsDataReceiverRoleId=$env:EVENTHUBS_DATA_RECEIVER_ROLE_ID `
+            --parameters eventHubsDataSenderRoleId=$env:EVENTHUBS_DATA_SENDER_ROLE_ID
 
       - name: Deploy to SharedDev
         shell: powershell
@@ -185,6 +273,10 @@ jobs:
             --resource-group $env:AZURE_RESOURCE_GROUP `
             --template-file infra/main.bicep `
             --parameters $env:BICEP_PARAMETER_FILE `
+            --parameters existingRoleAssignmentIds="$env:EXISTING_ROLE_ASSIGNMENT_IDS" `
+            --parameters storageBlobDataReaderRoleId=$env:STORAGE_BLOB_DATA_READER_ROLE_ID `
+            --parameters eventHubsDataReceiverRoleId=$env:EVENTHUBS_DATA_RECEIVER_ROLE_ID `
+            --parameters eventHubsDataSenderRoleId=$env:EVENTHUBS_DATA_SENDER_ROLE_ID `
             --name "ci-$stamp"
 
   post-deploy-regression:

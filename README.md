@@ -67,6 +67,43 @@ pipeline run reconciles/imports them in place rather than creating
 duplicates. This was validated with `az deployment group what-if` against the
 live subscription before being committed (see `git log`/PR history).
 
+### Importing pre-existing role assignments automatically
+
+If a resource group's managed identities already have role assignments
+granted manually (e.g. via the portal) before it was adopted into Bicep -
+as was the case for `itp`/SharedDev - those assignments exist under random
+GUID names that won't match the deterministic GUIDs Bicep would otherwise
+compute. Deploying as-is then fails with `RoleAssignmentExists`, because
+Azure RBAC rejects a second assignment for the same (principal, role, scope)
+tuple regardless of name.
+
+This is handled automatically, with no environment-specific configuration
+needed: the `deploy-shareddev`/`deploy-test` jobs run a "Resolve role
+definition and role assignment GUIDs dynamically" step before every
+deployment, which resolves two different kinds of GUID, neither of which is
+ever hardcoded in `main.bicep`:
+
+1. **Role assignment names** - looked up (via `az identity show` +
+   `az role assignment list`) to check whether each of the 3
+   identity/role/scope combinations this template manages already has an
+   assignment in the target resource group. Any match found is passed into
+   the `existingRoleAssignmentIds` Bicep parameter so the deployment updates
+   it in place; anything not found resolves to an empty value, and
+   `main.bicep` falls back to computing a fresh, deterministic, conflict-free
+   GUID.
+2. **Built-in role definition IDs** (e.g. "Storage Blob Data Reader") -
+   although these are global constants published by Microsoft (identical in
+   every subscription/tenant), they're still resolved by name via
+   `az role definition list --name "<role name>"` rather than pinned as a
+   literal GUID in Bicep, so the workflow keeps working unmodified even if
+   Microsoft were ever to change one. `main.bicep` still carries the current
+   documented values as parameter *defaults*, purely as a fallback for
+   direct/local deployments that bypass the pipeline.
+
+This makes the same template portable to a brand-new environment or
+subscription without any manual lookup or per-environment parameter file
+changes.
+
 ## CI/CD pipelines
 
 See [docs/pipeline-architecture.md](/C:/Users/karr/myprojects/ingestazureblobtoadx/docs/pipeline-architecture.md)
@@ -94,6 +131,15 @@ Triggers on `pull_request` (targeting `main`) and `push` to `main`.
 security scan, unit tests, and SharedDev e2e regression suite (ensuring
 "all scans and tests have passed") before deploying the same templates to
 `itp-test`, then runs the e2e suite again against Test.
+
+Both `deploy-shareddev` and `deploy-test` use `az deployment group create`
+in its default **Incremental** mode (not `Complete`), so repeated promotions
+are non-destructive: existing resources are updated in place, nothing
+outside the template is deleted, and you never need to run `destroy.yml`
+before promoting new changes. The `what-if` preview that runs just before
+every deploy is your safety check - review it for any `-` (delete) or
+replace operations before they apply, though none of the current modules
+require resource replacement for in-place property changes.
 
 ### 3. `destroy.yml` — manual teardown
 `workflow_dispatch`, choose `shareddev` or `test` and type the exact resource
