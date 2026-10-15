@@ -45,7 +45,7 @@ Describe 'Ingestion pipeline is deployed and healthy' {
     }
 
     It 'storage account has the clf blob container' {
-        $containers = az storage container list --account-name $StorageAccountName --auth-mode key -o json 2>$null | ConvertFrom-Json
+        $containers = az storage container list --account-name $StorageAccountName --auth-mode key --only-show-errors -o json 2>$null | ConvertFrom-Json
         $containers.name | Should -Contain 'clf'
     }
 
@@ -79,20 +79,20 @@ Describe 'Ingestion pipeline is deployed and healthy' {
     }
 
     It 'Kusto cluster is running' {
-        $json = az kusto cluster show -g $ResourceGroup -n $KustoClusterName -o json 2>$null | ConvertFrom-Json
+        $json = az kusto cluster show -g $ResourceGroup -n $KustoClusterName --only-show-errors -o json 2>$null | ConvertFrom-Json
         $json | Should -Not -BeNullOrEmpty
         $json.state | Should -BeIn @('Running', 'Starting')
     }
 
     It 'both Kusto databases exist' {
-        $databases = az kusto database list -g $ResourceGroup --cluster-name $KustoClusterName -o json 2>$null | ConvertFrom-Json
+        $databases = az kusto database list -g $ResourceGroup --cluster-name $KustoClusterName --only-show-errors -o json 2>$null | ConvertFrom-Json
         $databaseNames = $databases | ForEach-Object { ($_.name -split '/')[-1] }
         $databaseNames | Should -Contain 'clf-event-capture'
         $databaseNames | Should -Contain 'clf-events'
     }
 
     It 'Kusto data connection to the event hub exists' {
-        $connections = az kusto data-connection list -g $ResourceGroup --cluster-name $KustoClusterName --database-name 'clf-event-capture' -o json 2>$null | ConvertFrom-Json
+        $connections = az kusto data-connection list -g $ResourceGroup --cluster-name $KustoClusterName --database-name 'clf-event-capture' --only-show-errors -o json 2>$null | ConvertFrom-Json
         $connectionNames = $connections | ForEach-Object { ($_.name -split '/')[-1] }
         $connectionNames | Should -Contain 'itp-evg-adx-connection'
     }
@@ -140,13 +140,13 @@ Describe 'Blob upload triggers an event (functional regression)' {
         # Blob Data Contributor) or shared-key access. The CI pipeline's
         # identity only needs control-plane Contributor, so fall back to key
         # auth here (the storage account allows shared key access).
-        az storage blob upload --account-name $StorageAccountName --auth-mode key -c 'clf' -n $blobName -f $tempFile.FullName --overwrite true | Out-Null
+        az storage blob upload --account-name $StorageAccountName --auth-mode key --only-show-errors -c 'clf' -n $blobName -f $tempFile.FullName --overwrite true | Out-Null
         Remove-Item $tempFile -ErrorAction SilentlyContinue
 
-        $uploaded = az storage blob show --account-name $StorageAccountName --auth-mode key -c 'clf' -n $blobName -o json 2>$null | ConvertFrom-Json
+        $uploaded = az storage blob show --account-name $StorageAccountName --auth-mode key --only-show-errors -c 'clf' -n $blobName -o json 2>$null | ConvertFrom-Json
         $uploaded | Should -Not -BeNullOrEmpty
 
         # Clean up so repeated regression runs don't accumulate test blobs.
-        az storage blob delete --account-name $StorageAccountName --auth-mode key -c 'clf' -n $blobName | Out-Null
+        az storage blob delete --account-name $StorageAccountName --auth-mode key --only-show-errors -c 'clf' -n $blobName | Out-Null
     }
 }
