@@ -78,10 +78,10 @@ Expand-Archive -Path $zipPath -DestinationPath $RunnerDirectory -Force
 
 Write-Host ""
 Write-Host "Step 3: Register the runner with GitHub (manual, one-time):" -ForegroundColor Cyan
-Write-Host "  1. Open https://github.com/karr_risk/ingestazureblobtoadx/settings/actions/runners/new"
+Write-Host "  1. Open https://github.com/riteshkar-lexisnexisrisk/ingestazureblobtoadx/settings/actions/runners/new"
 Write-Host "  2. Copy the registration token shown there, then run from $RunnerDirectory :"
 $labelArg = if ($Labels) { " --labels $Labels" } else { '' }
-Write-Host "       .\config.cmd --url https://github.com/karr_risk/ingestazureblobtoadx --token <PASTE_TOKEN_HERE>$labelArg"
+Write-Host "       .\config.cmd --url https://github.com/riteshkar-lexisnexisrisk/ingestazureblobtoadx --token <PASTE_TOKEN_HERE>$labelArg"
 Write-Host ""
 Write-Host "Step 4: Start the runner so it inherits this Azure CLI session:" -ForegroundColor Cyan
 Write-Host "  IMPORTANT: do NOT install it as a Windows service (config.cmd's 'run as service'"

@@ -31,7 +31,7 @@
     described in README.md.
 
 .PARAMETER GitHubOrg
-    GitHub organization/user that owns the repository, e.g. "karr_risk".
+    GitHub organization/user that owns the repository, e.g. "riteshkar-lexisnexisrisk".
 
 .PARAMETER GitHubRepo
     Repository name, e.g. "ingestazureblobtoadx".
