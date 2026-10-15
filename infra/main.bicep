@@ -130,8 +130,14 @@ resource eventHubNamespaceExisting 'Microsoft.EventHub/namespaces@2024-01-01' ex
   ]
 }
 
+// These three role assignments were originally created manually (portal) when
+// the resource group was first set up, so they already exist with specific
+// GUID names. Azure RBAC rejects a second role assignment for the same
+// (principal, role, scope) tuple even under a different resource name, so the
+// `name:` below must match the existing assignment's GUID exactly - using a
+// freshly computed guid() here would fail with "RoleAssignmentExists".
 resource adxStorageBlobDataReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(resourceGroup().id, storageAccountName, adxManagedIdentityName, storageBlobDataReaderRoleId)
+  name: 'eb33d15f-eac7-4e9b-bb0d-fe81de2ce39e'
   scope: storageAccountExisting
   properties: {
     principalId: adxIdentity.outputs.principalId
@@ -141,7 +147,7 @@ resource adxStorageBlobDataReader 'Microsoft.Authorization/roleAssignments@2022-
 }
 
 resource adxEventHubDataReceiver 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(resourceGroup().id, eventHubNamespaceName, adxManagedIdentityName, eventHubsDataReceiverRoleId)
+  name: 'ce6bb43e-8354-4d5d-bc3d-750c36c77cce'
   scope: eventHubNamespaceExisting
   properties: {
     principalId: adxIdentity.outputs.principalId
@@ -151,7 +157,7 @@ resource adxEventHubDataReceiver 'Microsoft.Authorization/roleAssignments@2022-0
 }
 
 resource eventGridEventHubDataSender 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(resourceGroup().id, eventHubNamespaceName, eventGridManagedIdentityName, eventHubsDataSenderRoleId)
+  name: '0a2d326f-5f91-47ff-bfd0-0b0574403d61'
   scope: eventHubNamespaceExisting
   properties: {
     principalId: eventGridIdentity.outputs.principalId
