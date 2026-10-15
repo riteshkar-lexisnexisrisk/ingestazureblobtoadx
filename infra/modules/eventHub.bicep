@@ -35,6 +35,7 @@ resource namespace 'Microsoft.EventHub/namespaces@2024-01-01' = {
     capacity: skuCapacity
   }
   properties: {
+    disableLocalAuth: true
     isAutoInflateEnabled: false
     kafkaEnabled: true
     minimumTlsVersion: '1.2'

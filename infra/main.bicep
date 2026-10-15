@@ -33,6 +33,9 @@ param kustoSkuName string = 'Standard_E2ads_v5'
 @description('Kusto cluster SKU capacity (instance count).')
 param kustoSkuCapacity int = 2
 
+@description('Public IPv4 addresses or CIDR ranges allowed through the storage account firewall, in addition to trusted Azure services (e.g. the self-hosted runner workstation public IP).')
+param allowedIpAddresses array = []
+
 @description('Common tags applied to every resource.')
 param tags object = {
   environment: environmentName
@@ -69,6 +72,7 @@ module storage 'modules/storage.bicep' = {
     name: storageAccountName
     location: location
     tags: tags
+    allowedIpAddresses: allowedIpAddresses
   }
 }
 

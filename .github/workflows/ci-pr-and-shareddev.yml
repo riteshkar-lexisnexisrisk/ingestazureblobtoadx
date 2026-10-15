@@ -33,6 +33,12 @@ jobs:
       - name: Run Microsoft Security DevOps scan
         uses: microsoft/security-devops-action@v1
         id: msdo
+        with:
+          # This repo is Bicep/IaC + GitHub Actions only (no JS/TS source), so
+          # restrict to the categories that apply; the default "code"
+          # category pulls in eslint, which fatals with a parsing error on a
+          # repo with no eslint config/JS files instead of just skipping.
+          categories: 'IaC,secrets'
 
       - name: Upload SARIF results to code scanning
         uses: github/codeql-action/upload-sarif@v3
@@ -109,7 +115,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Verify Azure CLI session and select subscription
-        shell: pwsh
+        shell: powershell
         run: |
           az account show | Out-Null
           if ($LASTEXITCODE -ne 0) {
@@ -118,11 +124,11 @@ jobs:
           az account set --subscription $env:AZURE_SUBSCRIPTION_ID
 
       - name: Install Pester
-        shell: pwsh
+        shell: powershell
         run: Install-Module Pester -Force -SkipPublisherCheck -MinimumVersion 5.5.0 -Scope CurrentUser
 
       - name: Run end-to-end regression tests against SharedDev
-        shell: pwsh
+        shell: powershell
         run: |
           Import-Module Pester -MinimumVersion 5.5.0
           $config = New-PesterConfiguration
@@ -155,7 +161,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Verify Azure CLI session and select subscription
-        shell: pwsh
+        shell: powershell
         run: |
           az account show | Out-Null
           if ($LASTEXITCODE -ne 0) {
@@ -164,7 +170,7 @@ jobs:
           az account set --subscription $env:AZURE_SUBSCRIPTION_ID
 
       - name: What-if preview
-        shell: pwsh
+        shell: powershell
         run: |
           az deployment group what-if `
             --resource-group $env:AZURE_RESOURCE_GROUP `
@@ -172,7 +178,7 @@ jobs:
             --parameters $env:BICEP_PARAMETER_FILE
 
       - name: Deploy to SharedDev
-        shell: pwsh
+        shell: powershell
         run: |
           $stamp = Get-Date -Format 'yyyyMMddHHmmss'
           az deployment group create `
@@ -193,7 +199,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Verify Azure CLI session and select subscription
-        shell: pwsh
+        shell: powershell
         run: |
           az account show | Out-Null
           if ($LASTEXITCODE -ne 0) {
@@ -202,11 +208,11 @@ jobs:
           az account set --subscription $env:AZURE_SUBSCRIPTION_ID
 
       - name: Install Pester
-        shell: pwsh
+        shell: powershell
         run: Install-Module Pester -Force -SkipPublisherCheck -MinimumVersion 5.5.0 -Scope CurrentUser
 
       - name: Run post-deploy regression tests
-        shell: pwsh
+        shell: powershell
         run: |
           Import-Module Pester -MinimumVersion 5.5.0
           $config = New-PesterConfiguration

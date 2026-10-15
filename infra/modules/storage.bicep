@@ -9,6 +9,9 @@ param location string = resourceGroup().location
 @description('Blob container used to land captured events.')
 param containerName string = 'clf'
 
+@description('Public IPv4 addresses or CIDR ranges allowed through the storage firewall (e.g. the self-hosted runner workstation public IP), in addition to trusted Azure services. Update this if the workstation public IP changes.')
+param allowedIpAddresses array = []
+
 @description('Tags applied to the resource.')
 param tags object = {}
 
@@ -28,7 +31,13 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' = {
     allowSharedKeyAccess: true
     networkAcls: {
       bypass: 'AzureServices'
-      defaultAction: 'Allow'
+      defaultAction: 'Deny'
+      ipRules: [
+        for ip in allowedIpAddresses: {
+          value: ip
+          action: 'Allow'
+        }
+      ]
     }
   }
 }

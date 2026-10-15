@@ -14,3 +14,6 @@ Thumbs.db
 # Local az CLI scratch files
 export.json
 export.bicep
+
+# Agent/session scratch workspace (throwaway diagnostic scripts, logs, etc.)
+.scratch/

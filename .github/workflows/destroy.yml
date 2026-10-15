@@ -67,7 +67,7 @@ jobs:
       contents: read
     steps:
       - name: Verify Azure CLI session and select subscription
-        shell: pwsh
+        shell: powershell
         run: |
           az account show | Out-Null
           if ($LASTEXITCODE -ne 0) {
@@ -76,12 +76,12 @@ jobs:
           az account set --subscription $env:AZURE_SUBSCRIPTION_ID
 
       - name: Show resources that will be deleted
-        shell: pwsh
+        shell: powershell
         run: |
           az resource list --resource-group ${{ needs.resolve-environment.outputs.resource-group }} -o table
 
       - name: Delete resource group
-        shell: pwsh
+        shell: powershell
         run: |
           az group delete `
             --name ${{ needs.resolve-environment.outputs.resource-group }} `
@@ -89,7 +89,7 @@ jobs:
             --no-wait=false
 
       - name: Confirm deletion
-        shell: pwsh
+        shell: powershell
         run: |
           az group show --name ${{ needs.resolve-environment.outputs.resource-group }} 2>$null
           if ($LASTEXITCODE -eq 0) {

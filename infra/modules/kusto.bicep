@@ -77,7 +77,7 @@ resource cluster 'Microsoft.Kusto/clusters@2024-04-13' = {
   }
   properties: {
     enableAutoStop: true
-    enableDiskEncryption: false
+    enableDiskEncryption: true
     enableDoubleEncryption: false
     enablePurge: true
     enableStreamingIngest: true
