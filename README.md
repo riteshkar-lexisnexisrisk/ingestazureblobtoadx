@@ -40,6 +40,13 @@ infra/
 tests/
   unit/Infra.Tests.ps1        Pester: bicep lint/build, naming, RBAC presence (no Azure deployment)
   e2e/Regression.Tests.ps1    Pester: live checks against a deployed resource group
+adx/
+  scripts/
+    clf-events_capture_ingestion_tables.kql  KQL schema script: raw Avro ingestion
+                                              table + mapping, JSON transform function,
+                                              derived table + update policy, batching
+                                              policy. Deployed via main.bicep (see
+                                              "ADX (Kusto) schema management" below).
 scripts/
   setup-self-hosted-runner.ps1  One-time, manual: install a GitHub Actions self-hosted
                                  runner on this workstation, using your own `az login`
@@ -103,6 +110,46 @@ ever hardcoded in `main.bicep`:
 This makes the same template portable to a brand-new environment or
 subscription without any manual lookup or per-environment parameter file
 changes.
+
+### ADX (Kusto) schema management
+
+The `clf-event-capture` database's ingestion schema - the raw Avro table
+(`clf_events_capture_blobs_avro`), its ingestion mapping
+(`clf_events_capture_blobs_avro_mapping`), the `DecodeAvroToJsonEventBody()`
+transform function, the derived JSON table
+(`clf_events_capture_blobs_json`) with its update policy, and the ingestion
+batching policy - is defined in
+[adx/scripts/clf-events_capture_ingestion_tables.kql](/C:/Users/karr/myprojects/ingestazureblobtoadx/adx/scripts/clf-events_capture_ingestion_tables.kql)
+and deployed declaratively via a `Microsoft.Kusto/clusters/databases/scripts`
+resource in `infra/modules/kusto.bicep` (loaded at compile time with
+`loadTextContent()` - no separate upload/publish step required).
+
+This script's commands (`.create-merge table`, `.create-or-alter
+function`/`mapping`/`policy`) are all idempotent, so the script reapplies on
+every deployment (`forceUpdateTag` defaults to the deployment timestamp) -
+this also self-heals any manual, out-of-band changes to the schema back to
+what's committed in source control. The Event Grid data connection's
+`tableName`/`mappingRuleName` point at this same raw ingestion table/mapping,
+and the resource that runs the script is declared as a dependency of the
+data connection so the table/mapping are guaranteed to exist first.
+
+To add or change tables, functions, mappings, or policies, edit the `.kql`
+script and commit - no other file needs to change. The identity used to run
+the deployment (currently your own `az login` session, per the
+self-hosted-runner model below) must already be a Database Admin on the
+target Kusto database for the script to succeed; this is normally already
+the case for whoever did the original cluster/database deployment.
+
+> **Important:** `principalPermissionsAction` on the script resource is set
+> to `RetainPermissionOnScriptCompletion`, not `RemovePermissionOnScriptCompletion`.
+> `Remove` was tried first and found (empirically, during testing) to strip
+> the *entire* Database Admin role assignment for the deploying principal
+> after the script completes - not just the temporary elevation the script
+> itself needed - which locks that identity out of both future pipeline
+> deployments (which need write access to redeploy this very script) and
+> interactive Data Explorer access in the portal. If this identity ever
+> loses Database Admin access again, restore it via:
+> `az kusto database-principal-assignment create -g <rg> --cluster-name <cluster> --database-name clf-event-capture --principal-assignment-name <name> --principal-id <upn-or-object-id> --principal-type User --role Admin --tenant-id <tenant-id>`.
 
 ## CI/CD pipelines
 
@@ -212,6 +259,18 @@ Invoke-Pester -Container (New-PesterContainer -Path tests/e2e/Regression.Tests.p
     ParameterFile = 'infra/parameters/shareddev.bicepparam'
 }) -Output Detailed
 ```
+
+The ADX ingestion functional test (in `Regression.Tests.ps1`) uploads
+`tests/sampledata/32.avro` (a real Event Hub Capture-format sample file),
+waits for the ADX data connection to ingest it (polling, since ingestion is
+batched - see the ingestion batching policy in the `.kql` script above), and
+verifies the ingested row via the `sourceLocation` column before cleaning up
+both the blob and the ADX records. It talks to Kusto directly over its REST
+API (`/v1/rest/query` and `/v1/rest/mgmt`), authenticated with the same
+`az login` session as everything else - no extra setup needed beyond what's
+already required for the other e2e tests. If ingestion doesn't complete
+within the poll window, the test queries `.show ingestion failures` for that
+specific blob and includes the details in the failure message.
 
 ## Known, accepted first-deploy differences
 

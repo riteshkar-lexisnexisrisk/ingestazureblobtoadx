@@ -51,10 +51,16 @@ param consumerGroupName string
 param storageAccountId string
 
 @description('Name of the ingestion mapping rule applied to incoming events.')
-param mappingRuleName string = 'evh-capture-blobs_mapping'
+param mappingRuleName string = 'clf_events_capture_blobs_avro_mapping'
 
 @description('Target table name for ingested events.')
-param tableName string = 'evh-capture-blobs'
+param tableName string = 'clf_events_capture_blobs_avro'
+
+@description('Name of the database script resource that creates/updates the capture ingestion tables, mapping, transform function, and policies.')
+param captureIngestionScriptName string = 'clf-events-capture-ingestion-tables'
+
+@description('Forces the capture ingestion KQL script to reapply on every deployment. Defaults to the deployment timestamp: the script\'s commands (.create-merge/.create-or-alter) are idempotent, so always reapplying is safe and self-heals any out-of-band manual changes to the schema.')
+param captureIngestionScriptForceUpdateTag string = utcNow()
 
 @description('Tags applied to the resources.')
 param tags object = {}
@@ -109,6 +115,38 @@ resource eventsDb 'Microsoft.Kusto/clusters/databases@2024-04-13' = {
   }
 }
 
+// Creates/updates the raw Avro ingestion table + mapping, the JSON transform
+// function, the derived table + its update policy, and the ingestion
+// batching policy, from adx/scripts/clf-events_capture_ingestion_tables.kql.
+// All of the script's commands (.create-merge table, .create-or-alter
+// function/mapping/policy) are idempotent, so safe to reapply on every
+// deployment - this also self-heals any manual, out-of-band changes to the
+// schema back to what's defined in source control.
+resource captureIngestionScript 'Microsoft.Kusto/clusters/databases/scripts@2024-04-13' = {
+  parent: eventCaptureDb
+  name: captureIngestionScriptName
+  properties: {
+    // scriptContent is marked a secure/write-only property by the resource
+    // provider itself (so its value is never echoed in deployment history or
+    // what-if output), not a secret we're managing - loading it directly via
+    // loadTextContent() at compile time matches Microsoft's own official
+    // sample for this resource type.
+    #disable-next-line use-secure-value-for-secure-inputs
+    scriptContent: loadTextContent('../../adx/scripts/clf-events_capture_ingestion_tables.kql')
+    continueOnErrors: false
+    forceUpdateTag: captureIngestionScriptForceUpdateTag
+    // RetainPermissionOnScriptCompletion (not Remove): Remove strips the
+    // *entire* Admin role assignment for the deploying principal after the
+    // script finishes, not just the temporary elevation this script run
+    // needed - confirmed empirically, this also removed a pre-existing,
+    // standing Database Admin grant the deploying principal already had,
+    // locking them out of both future pipeline deployments (which need
+    // write access to redeploy this very script) and interactive Data
+    // Explorer access in the portal.
+    principalPermissionsAction: 'RetainPermissionOnScriptCompletion'
+  }
+}
+
 resource dataConnection 'Microsoft.Kusto/clusters/databases/dataConnections@2024-04-13' = {
   parent: eventCaptureDb
   kind: 'EventGridWithManagedIdentity'
@@ -127,6 +165,9 @@ resource dataConnection 'Microsoft.Kusto/clusters/databases/dataConnections@2024
     storageAccountResourceIdForManagedIdentity: storageAccountId
     tableName: tableName
   }
+  dependsOn: [
+    captureIngestionScript
+  ]
 }
 
 output clusterId string = cluster.id

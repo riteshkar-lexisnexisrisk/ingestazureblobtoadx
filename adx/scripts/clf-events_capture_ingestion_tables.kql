@@ -1,0 +1,32 @@
+// Create or alter table command
+////////////////////////////////////////////////////////////
+.create-merge table ['clf_events_capture_blobs_avro'] (['avro_blob_content']:dynamic, ['SequenceNumber']:long, ['Offset']:string, ['EnqueuedTimeUtc']:string, ['SystemProperties']:dynamic, ['Properties']:dynamic, ['Body']:dynamic, ['sourceLocation']: string, ['sourceLineNumber']:long)
+
+// Create mapping command
+////////////////////////////////////////////////////////////
+.create-or-alter table clf_events_capture_blobs_avro ingestion avro mapping 'clf_events_capture_blobs_avro_mapping' '[{"column":"avro_blob_content", "Properties":{"Path":"$[\'Body\']"}},{"column":"SequenceNumber", "Properties":{"Path":"$[\'SequenceNumber\']"}},{"column":"Offset", "Properties":{"Path":"$[\'Offset\']"}},{"column":"EnqueuedTimeUtc", "Properties":{"Path":"$[\'EnqueuedTimeUtc\']"}},{"column":"SystemProperties", "Properties":{"Path":"$[\'SystemProperties\']"}},{"column":"Properties", "Properties":{"Path":"$[\'Properties\']"}},{"column":"Body", "Properties":{"Path":"$[\'Body\']"}}, {"column":"sourceLocation", "Properties":{"Transform":"SourceLocation"}}, {"column":"sourceLineNumber", "Properties":{"Transform":"SourceLineNumber"}}]'
+
+// 1. Raw function used by the update policy to transform data from StagingTable to FinalTable
+.create-or-alter function with (folder = "Transform", docstring = "Decode Event Hub Avro Body to JSON") DecodeAvroToJsonEventBody() {
+    ['clf_events_capture_blobs_avro']
+    | project
+        EnqueuedTimeUtc,
+        SequenceNumber,
+        Offset,
+        Properties,
+        SystemProperties,
+        avro_blob_content,
+        json_blob_content = todynamic(unicode_codepoints_to_string(Body)),
+        sourceLocation,
+        sourceLineNumber
+}
+
+// Alter table command
+////////////////////////////////////////////////////////////
+.create-merge table ['clf_events_capture_blobs_json'] (['EnqueuedTimeUtc']:string, ['SequenceNumber']:long, ['Offset']:string, ['Properties']:dynamic, ['SystemProperties']:dynamic, ['avro_blob_content']:dynamic, ['json_blob_content']:dynamic, ['sourceLocation']: string, ['sourceLineNumber']:long)
+
+// 2. Attach the update policy to the destination table
+.alter table ['clf_events_capture_blobs_json'] policy update @'[{"IsEnabled": true, "Source": "clf_events_capture_blobs_avro", "Query": "DecodeAvroToJsonEventBody()", "IsTransactional": false, "PropagateIngestionProperties": false}]'
+
+// setting the batching ingestion to run every 2 min (each EVH partition export 1 AVRO - assuming every 5 mins, but partitions are not time-synced. 100 items assume 100 EVH partitions in Prod, but the size of each event is tiny. We'll tweak these numbers as we learn workload in Prod)
+.alter table ['clf_events_capture_blobs_avro'] policy ingestionbatching '{"MaximumBatchingTimeSpan": "00:02:00","MaximumNumberOfItems": 100,"MaximumRawDataSizeMB": 100}'
