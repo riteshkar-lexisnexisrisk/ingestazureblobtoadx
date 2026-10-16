@@ -2,7 +2,10 @@
 
 Diagram of the three GitHub Actions pipelines defined in
 [.github/workflows/](/C:/Users/karr/myprojects/ingestazureblobtoadx/.github/workflows),
-generated from the actual job graph and `runs-on` targets in that code.
+generated from the actual job graph and `runs-on` targets in that code. For
+the data-plane flow this infrastructure implements (blob → Event Grid →
+Event Hub → ADX) and how it's verified end-to-end, see
+[e2e-ingestion-flow.md](/C:/Users/karr/myprojects/ingestazureblobtoadx/docs/e2e-ingestion-flow.md).
 
 - **Blue** — jobs on GitHub-hosted runners (no Azure access; safe to run
   arbitrary PR code here).
@@ -12,6 +15,18 @@ generated from the actual job graph and `runs-on` targets in that code.
 - **Dark-orange diamonds** — human approval gates on protected GitHub
   Environments (`test`, `destroy-shareddev`, `destroy-test`).
 - **Green** — the target Azure resource groups.
+
+Every self-hosted (orange) job that touches a deployment (`deploy-shareddev`,
+`deploy-test`) first runs a "resolve role definition and role assignment
+GUIDs dynamically" step - looking up built-in role IDs by name and any
+pre-existing role assignment GUIDs for the target resource group - before
+calling `what-if`/`create`, so neither is ever hardcoded (see
+["Importing pre-existing role assignments automatically"](/C:/Users/karr/myprojects/ingestazureblobtoadx/README.md#importing-pre-existing-role-assignments-automatically)
+in the README). Those same deployments also apply the ADX ingestion schema
+(tables, mapping, transform function, policies) from
+[adx/scripts/clf-events_capture_ingestion_tables.kql](/C:/Users/karr/myprojects/ingestazureblobtoadx/adx/scripts/clf-events_capture_ingestion_tables.kql) -
+see
+["ADX (Kusto) schema management"](/C:/Users/karr/myprojects/ingestazureblobtoadx/README.md#adx-kusto-schema-management).
 
 ```mermaid
 ---
@@ -37,7 +52,7 @@ flowchart TB
         S2["lint-and-build"]
         S3["unit-tests"]
         S4["e2e-regression\n(SharedDev, self-hosted)"]
-        S5["deploy-shareddev\n(self-hosted · what-if + create)"]
+        S5["deploy-shareddev\n(self-hosted · resolve GUIDs ·\nwhat-if + create · incl. ADX schema)"]
         S6["post-deploy-regression\n(SharedDev, self-hosted)"]
         S2 --> S3 --> S4
         S1 --> S5
@@ -55,7 +70,7 @@ flowchart TB
         T2["unit-tests"]
         T3["verify-shareddev\n(e2e regression, self-hosted)"]
         T4{{"Required reviewer\napproval: test environment"}}
-        T5["deploy-test\n(self-hosted · what-if + create)"]
+        T5["deploy-test\n(self-hosted · resolve GUIDs ·\nwhat-if + create · incl. ADX schema)"]
         T6["post-deploy-regression\n(Test, self-hosted)"]
         T0 --> T1 & T2 --> T3 --> T4 --> T5 --> T6
     end

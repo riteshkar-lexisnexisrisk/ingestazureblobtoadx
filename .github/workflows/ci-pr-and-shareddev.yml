@@ -9,8 +9,16 @@ name: CI - Validate PR and promote to SharedDev
 on:
   pull_request:
     branches: [main]
+    # Doc-only changes don't affect infra/pipeline behavior, so skip the full
+    # validate+deploy run for them. Keep this list in sync with push's below.
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
   push:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
 
 permissions:
   contents: read

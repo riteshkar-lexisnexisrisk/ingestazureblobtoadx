@@ -154,7 +154,10 @@ the case for whoever did the original cluster/database deployment.
 ## CI/CD pipelines
 
 See [docs/pipeline-architecture.md](/C:/Users/karr/myprojects/ingestazureblobtoadx/docs/pipeline-architecture.md)
-for a diagram of the full job graph across all three workflows.
+for a diagram of the full job graph across all three workflows, and
+[docs/e2e-ingestion-flow.md](/C:/Users/karr/myprojects/ingestazureblobtoadx/docs/e2e-ingestion-flow.md)
+for the data-plane flow (blob → Event Grid → Event Hub → ADX) these
+pipelines deploy and verify.
 
 ### 1. `ci-pr-and-shareddev.yml` — PR validation + promote to SharedDev
 Triggers on `pull_request` (targeting `main`) and `push` to `main`.
