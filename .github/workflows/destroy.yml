@@ -91,8 +91,16 @@ jobs:
       - name: Confirm deletion
         shell: powershell
         run: |
-          az group show --name ${{ needs.resolve-environment.outputs.resource-group }} 2>$null
-          if ($LASTEXITCODE -eq 0) {
+          # Use "az group exists" (returns 'true'/'false' with exit code 0
+          # either way), not "az group show" (exits non-zero and writes to
+          # stderr once the group is actually gone - which is the expected,
+          # successful outcome here). GitHub Actions sets
+          # $ErrorActionPreference = 'Stop' for this shell, which turns that
+          # expected stderr/non-zero exit into a terminating error even
+          # though "2>$null" redirects it, so this check would otherwise
+          # fail every time a destroy actually succeeds.
+          $exists = az group exists --name ${{ needs.resolve-environment.outputs.resource-group }}
+          if ($exists -eq 'true') {
             Write-Error "Resource group still exists after delete."
             exit 1
           }

@@ -198,6 +198,17 @@ jobs:
         # environments/subscriptions with no hand-maintained GUIDs anywhere.
         shell: powershell
         run: |
+          # GitHub Actions sets $ErrorActionPreference = 'Stop' for this
+          # shell. Several az CLI calls below are EXPECTED to fail (e.g.
+          # "az identity show" for a managed identity that doesn't exist yet
+          # on a first-ever deploy) as part of normal control flow, and each
+          # already checks $LASTEXITCODE itself - but under 'Stop', that
+          # expected failure is converted into a terminating PowerShell
+          # error before the $LASTEXITCODE check is ever reached, even
+          # though stderr is redirected. Reset to 'Continue' to restore
+          # normal native-command exit-code semantics for this script.
+          $ErrorActionPreference = 'Continue'
+
           $paramContent = Get-Content $env:BICEP_PARAMETER_FILE -Raw
           function Get-BicepParamValue($Content, $Name) {
             if ($Content -match "param $Name\s*=\s*'([^']+)'") { return $Matches[1] }
